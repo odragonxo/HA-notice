@@ -1,0 +1,136 @@
+{
+ "groups": {
+  "all": "ทั้งหมด",
+  "trend": "เทรนด์ (ถือยาว)",
+  "swing": "เทรดสั้น (swing ถือไม่กี่วัน)"
+ },
+ "strategies": {
+  "sma_cross": {
+   "label": "ตามเทรนด์: SMA cross",
+   "group": "trend",
+   "params": {
+    "fast": 10,
+    "slow": 50
+   }
+  },
+  "sma_filter": {
+   "label": "ตามเทรนด์: ราคาเหนือเส้นค่าเฉลี่ย",
+   "group": "trend",
+   "params": {
+    "n": 200
+   }
+  },
+  "tsmom": {
+   "label": "โมเมนตัมตามเวลา (Time-series momentum)",
+   "group": "trend",
+   "params": {
+    "n": 252
+   }
+  },
+  "breakout": {
+   "label": "เบรกเอาต์ (Donchian)",
+   "group": "trend",
+   "params": {
+    "n": 50,
+    "exit_n": 20
+   }
+  },
+  "macd": {
+   "label": "MACD",
+   "group": "trend",
+   "params": {
+    "fast": 12,
+    "slow": 26,
+    "sig": 9
+   }
+  },
+  "supertrend": {
+   "label": "Supertrend (ATR)",
+   "group": "trend",
+   "params": {
+    "n": 10,
+    "mult": 3.0
+   }
+  },
+  "bollinger": {
+   "label": "กลับตัว: Bollinger Bands",
+   "group": "swing",
+   "params": {
+    "n": 20,
+    "k": 2.0
+   }
+  },
+  "rsi_revert": {
+   "label": "กลับตัว: RSI",
+   "group": "swing",
+   "params": {
+    "n": 2,
+    "low": 10,
+    "exit_level": 50
+   }
+  },
+  "trend_vote": {
+   "label": "โหวตหลายเทรนด์ (พารามิเตอร์คงที่)",
+   "group": "trend",
+   "params": {}
+  },
+  "rsi2_trend": {
+   "label": "สั้น: RSI(2) ย่อตัวในขาขึ้น",
+   "group": "swing",
+   "params": {
+    "low": 10,
+    "trend_n": 200,
+    "max_hold": 5
+   }
+  },
+  "ibs": {
+   "label": "สั้น: IBS ปิดอ่อนแรง",
+   "group": "swing",
+   "params": {
+    "low": 0.2,
+    "max_hold": 5,
+    "trend": 200
+   }
+  },
+  "pullback_low": {
+   "label": "สั้น: ซื้อย่อที่ต่ำสุด n วัน",
+   "group": "swing",
+   "params": {
+    "n": 5,
+    "max_hold": 10
+   }
+  },
+  "short_breakout": {
+   "label": "สั้น: เบรกเอาต์ระยะสั้น",
+   "group": "swing",
+   "params": {
+    "n": 10,
+    "exit_n": 5,
+    "max_hold": 10
+   }
+  },
+  "boll_pull": {
+   "label": "สั้น: Bollinger ย่อตัวในขาขึ้น",
+   "group": "swing",
+   "params": {
+    "k": 2.0,
+    "max_hold": 10
+   }
+  },
+  "gtr_default": {
+   "label": "GTR ค่าตั้งต้น (Supertrend+EMA, SL/TP ตาม ATR)",
+   "group": "swing",
+   "params": {}
+  },
+  "gtr": {
+   "label": "GTR ปรับพารามิเตอร์ (ฝึกจากช่วง Train)",
+   "group": "swing",
+   "params": {
+    "factor": 2.0,
+    "early": 1,
+    "scale": 1.0,
+    "retrace": 0.0
+   }
+  }
+ }
+}

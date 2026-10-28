@@ -1,0 +1,35 @@
+name: Signal Hub
+version: "0.1.0"
+slug: signal_hub
+description: สแกนสัญญาณซื้อขายหุ้นและแจ้งเตือนเข้ามือถือ
+arch: [aarch64, amd64]
+startup: application
+boot: auto
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:chart-line
+panel_title: Signals
+homeassistant_api: true
+options:
+  scan_time: "05:15"
+  watchlist: ["NVDA", "AAPL", "MSFT"]
+  default_strategy: gtr_default
+  cost_pct: 0.2
+  min_free_mb: 250
+  ha_notify: []
+  ntfy_url: "https://ntfy.sh"
+  ntfy_topic: ""
+  tg_token: ""
+  tg_chat: ""
+schema:
+  scan_time: str
+  watchlist: [str]
+  default_strategy: str
+  cost_pct: float
+  min_free_mb: int
+  ha_notify: [str]
+  ntfy_url: str?
+  ntfy_topic: str?
+  tg_token: password?
+  tg_chat: str?
