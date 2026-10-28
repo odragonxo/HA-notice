@@ -1,5 +1,5 @@
 name: Signal Hub
-version: "0.1.1"
+version: "0.1.2"
 slug: signal_hub
 description: สแกนสัญญาณซื้อขายหุ้นและแจ้งเตือนเข้ามือถือ
 arch: [aarch64, amd64]
