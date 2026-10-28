@@ -107,20 +107,22 @@ function alerts(){const ch=[['ha','Home Assistant','ส่งเข้าแอ�
  document.querySelectorAll('[data-c]').forEach(e=>e.onclick=()=>{const k=e.dataset.c;cfg.ch[k]=!cfg.ch[k];save();alerts()});
  document.querySelectorAll('[data-e]').forEach(e=>e.onclick=()=>{const k=e.dataset.e;cfg.ev[k]=!cfg.ev[k];save();alerts()});
  $('#tm').onchange=e=>{cfg.time=e.target.value;save();toast('บันทึกเวลาสแกนแล้ว')};$('#cp').onchange=e=>{cfg.capital=Math.max(0,+e.target.value||0);save();toast('บันทึกเงินลงทุนแล้ว')};
-// แทนที่ฟังก์ชันปุ่มทดสอบแจ้งเตือนเดิมใน index.html
-$('#ts').onclick = async () => {
-  try {
-    const r = await fetch('api/test-notify', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({channel: 'ntfy'})
-    });
-    const j = await r.json();
-    toast(r.ok ? 'ผลส่ง: ' + JSON.stringify(j) : 'ส่งไม่สำเร็จ (' + r.status + ')');
-  } catch (e) {
-    toast('เชื่อมต่อ server ไม่ได้: ' + e.message);
-  }
-};
+ 
+ // แทนที่ฟังก์ชันปุ่มทดสอบแจ้งเตือนเดิม
+ $('#ts').onclick = async () => {
+   try {
+     const r = await fetch('api/test-notify', {
+       method: 'POST',
+       headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify({channel: 'ntfy'})
+     });
+     const j = await r.json();
+     toast(r.ok ? 'ผลส่ง: ' + JSON.stringify(j) : 'ส่งไม่สำเร็จ (' + r.status + ')');
+   } catch (e) {
+     toast('เชื่อมต่อ server ไม่ได้: ' + e.message);
+   }
+ };
+}
 function go(v){view=v;hv=null;const t={today:'สัญญาณวันนี้',detail:S[sel].k,alerts:'แจ้งเตือน'};$('#ttl').firstChild.textContent=t[v];
  $('#sub').textContent=v==='today'?new Date().toLocaleDateString('th-TH',{weekday:'long',day:'numeric',month:'long'}):v==='detail'?S[sel].nm:'เลือกว่าอยากให้เตือนอะไร ทางไหน';
  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));({today,detail,alerts})[v]();scrollTo(0,0)}
