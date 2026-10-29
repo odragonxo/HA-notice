@@ -24,12 +24,12 @@ h3{font-size:13px;color:var(--mute);font-weight:600;margin:16px 4px 8px;text-tra
 input,select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:0}input[type=number],input[type=time]{width:110px;text-align:right}
 .btn{background:var(--acc);color:#fff;border-radius:12px;padding:9px 16px;font-weight:700}.ghost{background:var(--bg);color:var(--acc);border:1px solid var(--line);border-radius:10px;padding:5px 11px;font-size:12.5px;font-weight:600}.red{color:var(--sell)}
 nav{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:space-around;background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));z-index:9}
-nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11.5px;color:var(--mute);padding:4px}nav b{font-size:20px;font-weight:400}nav .on{color:var(--acc);font-weight:700}
+nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;color:var(--mute);padding:4px}nav b{font-size:20px;font-weight:400}nav .on{color:var(--acc);font-weight:700}
 #toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:99px;font-size:13px;opacity:0;transition:.25s;pointer-events:none;z-index:20;max-width:90%}#toast.s{opacity:1}
 </style></head><body>
 <header><h1 id="ttl">สัญญาณวันนี้<small id="sub"></small></h1><button class="ib" id="th" aria-label="สลับธีม">◐</button></header>
 <main id="v"></main>
-<nav><button data-v="today"><b>🚦</b>สัญญาณ</button><button data-v="detail"><b>📈</b>กราฟ</button><button data-v="alerts"><b>🔔</b>แจ้งเตือน</button></nav><div id="toast"></div>
+<nav><button data-v="today"><b>🚦</b>สัญญาณ</button><button data-v="detail"><b>📈</b>กราฟ</button><button data-v="tests"><b>🧪</b>ผลทดสอบ</button><button data-v="alerts"><b>🔔</b>แจ้งเตือน</button><button data-v="more"><b>⋯</b>เพิ่มเติม</button></nav><div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s),fmt=n=>Math.round(n).toLocaleString('en-US'),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const store={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
@@ -84,6 +84,32 @@ function draw(){const cv=$('#cv');if(!cv||!CH)return;const n=Math.min(rg,CH.bars
  CH.trades.forEach(t=>{const a=ix[t.entry_date],z=t.status==='ปิดแล้ว'?ix[t.exit_date]:undefined;if(a!==undefined)tri(X(a),Y(B[a].l)+3,1,C('--buy'));
   if(z!==undefined){tri(X(z),Y(B[z].h)-3,-1,C('--sell'));const v=cap()*t.ret;g.fillStyle=C(v>=0?'--buy':'--sell');g.fillText(money(v),X(z),Y(B[z].h)-18)}});
  if(hv!=null&&hv<n){const b=B[hv];g.strokeStyle=C('--mute');g.setLineDash([3,3]);g.beginPath();g.moveTo(X(hv),P.t);g.lineTo(X(hv),h-P.b);g.stroke();g.setLineDash([]);$('#hov').textContent=`${b.d} · O ${b.o.toFixed(2)} H ${b.h.toFixed(2)} L ${b.l.toFixed(2)} C ${b.c.toFixed(2)}`}}
+// ---------- test results of every technique ----------
+let BTR=null,bgrp='all',bopen=null;
+async function tests(){await refresh();if(!sel)sel=ST.items[0]?.ticker;if(!sel){$('#v').innerHTML='<div class="card m">เพิ่มหุ้นที่หน้าสัญญาณก่อน</div>';return}
+ const chips=`<div class="row" style="justify-content:flex-start;flex-wrap:wrap;margin-bottom:8px">${ST.items.map(i=>`<button class="ghost" data-s="${esc(i.ticker)}" style="${i.ticker===sel?'background:var(--acc);color:#fff':''}">${esc(i.ticker)}</button>`).join('')}</div>`;
+ const bind=()=>document.querySelectorAll('[data-s]').forEach(e=>e.onclick=()=>{sel=e.dataset.s;bopen=null;tests()});
+ let r;try{r=await A('backtest/'+sel)}catch(e){$('#v').innerHTML=chips+`<div class="card red">${esc(e.message)}</div>`;bind();return}
+ const start=`<button class="btn" id="bs" style="width:100%">${r.status==='error'?'ลองใหม่':'เริ่มทดสอบทุกเทคนิคกับ '+esc(sel)}</button>`;
+ if(r.status==='running'){$('#v').innerHTML=chips+`<div class="card m">กำลังทดสอบทุกเทคนิคของ ${esc(sel)} … ใช้เวลา 1-3 นาทีบน Pi (ปิดหน้านี้ได้ ระบบทำต่อเอง และเก็บผลไว้ 24 ชั่วโมง)</div>`;bind();setTimeout(()=>view==='tests'&&tests(),5000);return}
+ if(r.status!=='done'){$('#v').innerHTML=chips+(r.error?`<div class="card red">${esc(r.error)}</div>`:'<div class="card m">ทดสอบย้อนหลังทุกเทคนิคกับหุ้นนี้ โดยเลือกพารามิเตอร์จากข้อมูล 70% แรก แล้วตัดสินผลจาก 30% หลังที่ไม่เคยเห็น เทียบกับการซื้อถือ</div>')+start;bind();
+  $('#bs').onclick=run(async()=>{await A('backtest/'+sel,'POST',{});tests()});return}
+ BTR=r.result;const bh=BTR.bh,c=cap(),G={all:'ทั้งหมด',trend:'เทรนด์',swing:'เทรดสั้น'},fin=x=>c*(1+x);
+ const R=BTR.rows.filter(x=>bgrp==='all'||CAT.strategies[x.name]?.group===bgrp).sort((a,b)=>(b.test.sharpe??-9)-(a.test.sharpe??-9));
+ const eqs=(a,b)=>{const all=[...a,...b],lo=Math.min(...all),hi=Math.max(...all),p=s=>s.map((v,i)=>`${i*300/59},${88-(v-lo)/(hi-lo||1)*84}`).join(' ');return`<svg viewBox="0 0 300 92" width="100%" style="margin-top:8px"><polyline fill="none" stroke="var(--wait)" stroke-width="1.6" points="${p(b)}"/><polyline fill="none" stroke="var(--acc)" stroke-width="2" points="${p(a)}"/></svg>`};
+ $('#v').innerHTML=chips+`<div class="m" style="margin:0 4px 8px">ช่วงทดสอบ ${esc(BTR.split)} → ${esc(BTR.end)} · เลือกค่าจากข้อมูล ${esc(BTR.start)} ถึงก่อน ${esc(BTR.split)} · ต้นทุน ${(+BTR.cost).toFixed(2)}%/ข้าง · เงินลงทุน ฿${fmt(c)}</div>
+ <div class="card"><div class="row"><div><div class="t">ซื้อแล้วถือเฉย ๆ</div><div class="m">Sharpe ${bh.sharpe?.toFixed(2)} · ลงลึกสุด ${pc(bh.max_drawdown)}</div></div><div style="text-align:right"><b>${pc(bh.total_return)}</b><div class="m">฿${fmt(fin(bh.total_return))}</div></div></div></div>
+ <div class="seg">${Object.entries(G).map(([k,t])=>`<button data-g="${k}" class="${bgrp===k?'on':''}">${t}</button>`).join('')}</div>`+
+ R.map(x=>{const t=x.test,w=(t.sharpe??-9)>(bh.sharpe??0),ov=x.train_sharpe>0&&t.sharpe<.5*x.train_sharpe,L=CAT.strategies[x.name]||{label:x.name};
+ return`<div class="card" data-o="${x.name}"><div class="row"><div><div class="t" style="font-size:15px">${esc(L.label)}</div><div class="m">Sharpe ${t.sharpe?.toFixed(2)} · ลงลึกสุด ${pc(t.max_drawdown)} · เทรด ${t.trades} · ชนะ ${t.win_rate==null?'-':Math.round(t.win_rate*100)+'%'}</div></div><div style="text-align:right"><b class="${t.total_return>=0?'up':'dn'}">${pc(t.total_return)}</b><div class="m">${w?'✅ Sharpe ชนะถือ':'❌ แพ้ถือ'}</div></div></div>
+ ${bopen===x.name?`<div class="kv" style="margin-top:10px"><span>เงินลงทุน ฿${fmt(c)} จะเหลือ</span><b>฿${fmt(fin(t.total_return))} (${money(c*t.total_return)})</b><span>CAGR</span><b>${pc(t.cagr)}</b><span>เวลาอยู่ในตลาด</span><b>${t.time_in_market==null?'-':Math.round(t.time_in_market*100)+'%'}</b><span>ถือเฉลี่ย</span><b>${t.avg_days==null?'-':t.avg_days.toFixed(1)+' วัน'}</b><span>Sharpe ช่วงฝึก → ทดสอบ</span><b>${x.train_sharpe?.toFixed(2)} → ${t.sharpe?.toFixed(2)}</b><span>ค่าที่เลือก</span><b style="font-size:12px">${esc(JSON.stringify(x.params)||'-')}</b></div>
+ ${eqs(x.eq,bh.eq)}<div class="m">เส้นม่วง = เทคนิคนี้ · เส้นเทา = ซื้อถือ (เริ่ม=1)</div>${ov?'<div class="m red">⚠️ Sharpe ช่วงทดสอบตกจากช่วงฝึกมาก อาจ overfit</div>':''}${t.trades<20?'<div class="m red">⚠️ เทรดน้อยกว่า 20 ครั้ง สถิติยังไม่น่าเชื่อถือ</div>':''}
+ <button class="btn" data-u="${x.name}" style="width:100%;margin-top:10px">ใช้เทคนิคนี้กับ ${esc(sel)}</button>`:''}</div>`}).join('')+`<button class="ghost" id="rr" style="margin:6px 0 0">ทดสอบใหม่</button><div class="m" style="margin:10px 4px">ผลย้อนหลังไม่ใช่การรับประกัน ลองหลายเทคนิคแล้วเลือกตัวที่ดีที่สุดเสี่ยงเจอตัวที่บังเอิญดี ดู Sharpe ช่วงทดสอบ จำนวนเทรด และลองกับหุ้นตัวอื่นประกอบ</div>`;
+ bind();document.querySelectorAll('[data-g]').forEach(e=>e.onclick=()=>{bgrp=e.dataset.g;tests()});
+ document.querySelectorAll('[data-o]').forEach(e=>e.onclick=ev=>{if(ev.target.closest('[data-u]'))return;bopen=bopen===e.dataset.o?null:e.dataset.o;tests()});
+ document.querySelectorAll('[data-u]').forEach(e=>e.onclick=run(async()=>{const x=BTR.rows.find(y=>y.name===e.dataset.u);await A('watchlist/'+sel,'PUT',{strategy:x.name,params:x.params});toast('ใช้เทคนิคนี้กับ '+sel+' แล้ว กำลังสแกนใหม่')}));
+ $('#rr').onclick=run(async()=>{await A('backtest/'+sel,'POST',{});tests()})}
+function more(){$('#v').innerHTML=`<h3>กำลังจะมา</h3><div class="card">${[['🧠','Walk-forward','ฝึกซ้ำทีละช่วงเพื่อดูว่าผลนิ่งไหม'],['🛠️','ระบบเลือกเอง','เลือกอินดิเคเตอร์และค่าเอง ดูจุดซื้อขายและกำไรขาดทุน'],['🤖','ผู้ช่วย AI','ให้คะแนนโอกาสสำเร็จ พร้อมผลวัดจริงของโมเดล'],['🔍','สแกนหุ้น S&P 500','หาหุ้นที่เพิ่งเกิดสัญญาณ ปรับสัญญาณได้เอง']].map(([i,t,d])=>`<div class="li row"><div><div class="t" style="font-size:15px">${i} ${t}</div><div class="m">${d}</div></div><span class="m">เร็ว ๆ นี้</span></div>`).join('')}</div><div class="m" style="margin:10px 4px">เมนูเหล่านี้มีในเวอร์ชันเบราว์เซอร์ (Streamlit) แล้ว กำลังทยอยย้ายมาที่นี่</div>`}
 // ---------- alerts ----------
 async function alerts(){await refresh();const S=ST.settings,hist=await A('signals').catch(()=>[]);
  const ch=[['ha','มือถือผ่าน Home Assistant','แอป Companion (เลือกเครื่องที่ตัวเลือก ha_notify)'],['persist','การ์ดแจ้งเตือนใน HA','ไอคอนระฆังใน Home Assistant'],['ntfy','ntfy','ต้องตั้ง ntfy_topic'],['tg','Telegram','ต้องตั้ง tg_token และ tg_chat']],
@@ -97,9 +123,9 @@ async function alerts(){await refresh();const S=ST.settings,hist=await A('signal
  document.querySelectorAll('[data-e]').forEach(e=>e.onclick=()=>put({events:{[e.dataset.e]:!S.events[e.dataset.e]}}));
  document.querySelectorAll('[data-x]').forEach(e=>e.onclick=run(async()=>{const r=await A('test-notify','POST',{channel:e.dataset.x});toast(Object.values(r)[0]==='ok'?'ส่งทดสอบแล้ว ดูที่มือถือ':String(Object.values(r)[0]))}));
  $('#tm').onchange=e=>put({time:e.target.value});$('#cp').onchange=e=>put({capital:Math.max(0,+e.target.value||0)})}
-function go(v){view=v;hv=null;const t={today:'สัญญาณวันนี้',detail:sel||'กราฟ',alerts:'แจ้งเตือน'};$('#ttl').firstChild.textContent=t[v];
- $('#sub').textContent=v==='today'?new Date().toLocaleDateString('th-TH',{weekday:'long',day:'numeric',month:'long'}):v==='detail'?'กราฟและระดับซื้อขาย':'เลือกว่าอยากให้เตือนอะไร ทางไหน';
- document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));run({today,detail,alerts}[v])().then(()=>{if(v==='detail')$('#ttl').firstChild.textContent=sel||'กราฟ'});scrollTo(0,0)}
+function go(v){view=v;hv=null;const t={today:'สัญญาณวันนี้',detail:sel||'กราฟ',tests:'ผลทดสอบ',alerts:'แจ้งเตือน',more:'เพิ่มเติม'};$('#ttl').firstChild.textContent=t[v];
+ $('#sub').textContent=v==='today'?new Date().toLocaleDateString('th-TH',{weekday:'long',day:'numeric',month:'long'}):v==='detail'?'กราฟและระดับซื้อขาย':v==='alerts'?'เลือกว่าอยากให้เตือนอะไร ทางไหน':v==='tests'?'ผลของแต่ละเทคนิคกับหุ้นที่เลือก':'เมนูที่กำลังย้ายมา';
+ document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));run({today,detail,tests,alerts,more}[v])().then(()=>{if(v==='detail')$('#ttl').firstChild.textContent=sel||'กราฟ'});scrollTo(0,0)}
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
 $('#th').onclick=()=>{const d=document.documentElement,dark=getComputedStyle(d).colorScheme.includes('dark');theme=dark?'light':'dark';d.dataset.theme=theme;store.set('theme',theme);draw()};
 addEventListener('resize',draw);go('today');if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
