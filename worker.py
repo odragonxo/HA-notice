@@ -2,6 +2,7 @@
 It asks Linux to kill THIS process first if memory runs out, so Home Assistant itself is not the victim."""
 import gc
 import json
+import math
 import os
 import sys
 from datetime import datetime
@@ -64,6 +65,24 @@ def main():
             except Exception as e:
                 print(json.dumps({"ok": False, "ticker": it["ticker"], "error": str(e)[:200]}, ensure_ascii=False), flush=True)
             gc.collect()
+    elif cmd == "backtest":
+        t = req["ticker"]
+        df = bt._clean(yf.download(t, period="10y", auto_adjust=True, progress=False, threads=False))
+        if len(df) < 800:
+            raise ValueError("ข้อมูลไม่พอสำหรับทดสอบ (ต้องมีประวัติราว 3 ปีขึ้นไป)")
+        split = df.index[int(len(df) * 0.7)]  # first 70% = choose parameters, last 30% = judge
+        fits, bh, bhd = bt.evaluate(df, split, COST)
+        keys = ("total_return", "cagr", "max_drawdown", "sharpe", "trades", "win_rate", "avg_days", "time_in_market", "expectancy")
+        clean = lambda m: {k: (float(m[k]) if k in m and math.isfinite(float(m[k])) else None) for k in keys}
+
+        def eq(d, n=60):
+            e = (1 + d[d.index >= split]).cumprod()
+            return [round(float(e.iloc[int(i * (len(e) - 1) / (n - 1))]), 4) for i in range(n)]
+        rows = [{"name": n, "params": f["params"], "train_sharpe": f["train"].get("sharpe"), "test": clean(f["test"]), "eq": eq(f["daily"])}
+                for n, f in fits.items()]
+        print(json.dumps({"ticker": t, "start": df.index[0].strftime("%Y-%m-%d"), "split": split.strftime("%Y-%m-%d"),
+                          "end": df.index[-1].strftime("%Y-%m-%d"), "cost": COST * 100, "bh": {**clean(bh), "eq": eq(bhd)}, "rows": rows},
+                         ensure_ascii=False))
     elif cmd == "chart":
         snap, _, df, tr = analyse(req["ticker"], req["strategy"], req["params"])
         d = df.iloc[-260:]

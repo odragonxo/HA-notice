@@ -51,6 +51,7 @@ DEFAULTS = {"time": opt("scan_time", "05:15"), "events": {"buy": True, "sell": T
             "channels": {"ha": True, "persist": False, "ntfy": False, "tg": False}, "capital": 10000}
 EV_TH = {"buy": "🟢 สัญญาณซื้อ", "sell": "🔴 สัญญาณขาย", "sl": "🛑 โดน Stop-loss", "tp": "🎯 ถึงเป้ากำไร"}
 LOCK, SCAN_LOCK = threading.Lock(), threading.Lock()
+JOBS = {}
 STATUS = {"scanning": False, "last_scan": None, "errors": {}}
 
 
@@ -170,6 +171,24 @@ def run_scan(only=None):
     finally:
         STATUS["scanning"] = False
         SCAN_LOCK.release()
+
+
+def run_backtest(t):
+    """Runs in a background thread: ~1-3 minutes on a Pi, result cached for 24 h."""
+    JOBS[t] = {"status": "running"}
+    try:
+        with SCAN_LOCK:  # one heavy job at a time
+            if mem_free_mb() < int(opt("min_free_mb", 250)):
+                raise RuntimeError("แรมว่างไม่พอ ลองใหม่ภายหลัง")
+            p = run_worker("backtest", {"ticker": t}, 1500)
+        try:
+            out = json.loads(p.stdout)
+        except ValueError:
+            raise RuntimeError((p.stderr.strip().splitlines() or ["ทดสอบไม่สำเร็จ (อาจถูกปิดเพราะแรมไม่พอ)"])[-1][:200])
+        (DATA / f"bt_{t}.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        JOBS[t] = {"status": "done"}
+    except Exception as e:
+        JOBS[t] = {"status": "error", "error": str(e)[:200]}
 
 
 def scheduler():
@@ -315,6 +334,20 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json({"error": (p.stderr.strip().splitlines() or ["คำนวณไม่สำเร็จ"])[-1][:200]}, 400)
             cache.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
             return self.send_json(out)
+        m = re.match(r"/api/backtest/([A-Za-z0-9.\-]+)$", path)
+        if m and method in ("GET", "POST"):
+            t = m.group(1).upper()
+            f = DATA / f"bt_{t}.json"
+            if method == "POST":  # (re)run
+                if JOBS.get(t, {}).get("status") != "running":
+                    f.unlink(missing_ok=True)
+                    threading.Thread(target=run_backtest, args=(t,), daemon=True).start()
+                return self.send_json({"status": "running"})
+            if JOBS.get(t, {}).get("status") == "running":
+                return self.send_json({"status": "running"})
+            if f.exists() and time.time() - f.stat().st_mtime < 86400:
+                return self.send_json({"status": "done", "result": json.loads(f.read_text(encoding="utf-8"))})
+            return self.send_json(JOBS.get(t) if JOBS.get(t, {}).get("status") == "error" else {"status": "none"})
         if path == "/api/settings" and method == "PUT":
             cur = settings()
             if re.fullmatch(r"\d\d:\d\d", str(b.get("time", ""))):
