@@ -351,6 +351,11 @@ def main():
             add_watch(t, strat)
             kv_set("seeded_" + t, True)
     threading.Thread(target=scheduler, daemon=True).start()
+    if opt("notify_on_start", False):  # quick way to check that alerts reach your phone
+        threading.Thread(target=lambda: print("ทดสอบแจ้งเตือน:", notify.send(settings()["channels"], "✅ Signal Hub เริ่มทำงานแล้ว",
+                         "ถ้าเห็นข้อความนี้ ช่องทางแจ้งเตือนใช้งานได้", os.environ.get("PUBLIC_URL") or None, "start"), flush=True), daemon=True).start()
+    if opt("scan_on_start", False):
+        threading.Thread(target=run_scan, daemon=True).start()
     port = int(os.environ.get("PORT", "8099"))
     print(f"Signal Hub พร้อมที่พอร์ต {port}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()

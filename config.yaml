@@ -1,5 +1,5 @@
 name: Signal Hub
-version: "0.1.3"
+version: "0.1.0"
 slug: signal_hub
 description: สแกนสัญญาณซื้อขายหุ้นและแจ้งเตือนเข้ามือถือ
 arch: [aarch64, amd64]
@@ -17,6 +17,8 @@ options:
   default_strategy: gtr_default
   cost_pct: 0.2
   min_free_mb: 250
+  notify_on_start: true
+  scan_on_start: false
   ha_notify: []
   ntfy_url: "https://ntfy.sh"
   ntfy_topic: ""
@@ -28,6 +30,8 @@ schema:
   default_strategy: str
   cost_pct: float
   min_free_mb: int
+  notify_on_start: bool
+  scan_on_start: bool
   ha_notify: [str]
   ntfy_url: str?
   ntfy_topic: str?
