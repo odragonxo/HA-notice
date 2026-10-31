@@ -3,8 +3,11 @@ Signal Hub (Home Assistant add-on). This process uses only the standard library,
 All pandas/yfinance work runs in worker.py, a short-lived child that Linux is told to kill first when RAM runs out.
 """
 import base64
+import csv
+import gzip
 import hashlib
 import hmac
+import html as _html
 import json
 import mimetypes
 import os
@@ -15,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -48,10 +52,16 @@ CAT = json.loads((HERE / "catalog.json").read_text(encoding="utf-8"))
 STRATS = CAT["strategies"]
 INGRESS_IP = "172.30.32.2"  # the Supervisor's ingress gateway: HA has already logged the user in
 DEFAULTS = {"time": opt("scan_time", "05:15"), "events": {"buy": True, "sell": True, "sl": True, "tp": False},
-            "channels": {"ha": True, "persist": False, "ntfy": False, "tg": False}, "capital": 10000}
+            "channels": {"ha": True, "persist": False, "ntfy": False, "tg": False}, "capital": 10000, "auto_refresh": True}
 EV_TH = {"buy": "🟢 สัญญาณซื้อ", "sell": "🔴 สัญญาณขาย", "sl": "🛑 โดน Stop-loss", "tp": "🎯 ถึงเป้ากำไร"}
 LOCK, SCAN_LOCK = threading.Lock(), threading.Lock()
 JOBS = {}
+JOBS2 = {}
+HEAVY = {"p": None}
+RES = DATA / "results"
+RES.mkdir(parents=True, exist_ok=True)
+SJ = {"status": "none"}
+FALLBACK = "AAPL MSFT NVDA AMZN GOOGL META AVGO TSLA BRK-B JPM LLY V UNH XOM MA COST HD PG JNJ ABBV NFLX BAC WMT CRM ORCL CVX KO MRK AMD CSCO PEP ADBE TMO LIN MCD ACN ABT DIS WFC GE INTU QCOM TXN AMAT".split()
 STATUS = {"scanning": False, "last_scan": None, "errors": {}}
 
 
@@ -108,16 +118,112 @@ def add_watch(t, name, params=None, alert=1):
         c.execute("INSERT OR REPLACE INTO watch VALUES(?,?,?,?)", (t, name, json.dumps(params or STRATS[name]["params"]), alert))
 
 
-def run_worker(cmd, payload, timeout=600):
-    return subprocess.run([sys.executable, str(HERE / "worker.py"), cmd], input=json.dumps(payload), capture_output=True,
-                          text=True, timeout=timeout, cwd=HERE)
+def run_worker(cmd, payload, timeout=600, heavy=False):
+    """Heavy jobs register their child so an urgent alert scan can stop them (alerts always come first)."""
+    p = subprocess.Popen([sys.executable, str(HERE / "worker.py"), cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, cwd=HERE)
+    if heavy:
+        HEAVY["p"] = p
+    try:
+        out, err = p.communicate(json.dumps(payload), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        out, err = p.communicate()
+    finally:
+        if heavy:
+            HEAVY["p"] = None
+    return subprocess.CompletedProcess(p.args, p.returncode, out, err)
+
+
+def kill_heavy():
+    p = HEAVY["p"]
+    if p and p.poll() is None:
+        p.terminate()
+
+
+def expected_bar():
+    """Date of the newest US session that should already be final (after 16:20 New York time)."""
+    et = datetime.now(ZoneInfo("America/New_York"))
+    d = et.date()
+    if et.hour * 60 + et.minute < 16 * 60 + 20:
+        d = d.fromordinal(d.toordinal() - 1)
+    while d.weekday() >= 5:
+        d = d.fromordinal(d.toordinal() - 1)
+    return d.isoformat()
+
+
+def run_job(kind, key, cmd, payload, timeout):
+    """Generic heavy job: result is written to /data/results and only READ by the app. Re-queued if an alert scan pre-empts it."""
+    jk = f"{kind}:{key}"
+    JOBS2[jk] = {"status": "running"}
+    try:
+        for _ in range(6):
+            with SCAN_LOCK:
+                if mem_free_mb() < int(opt("min_free_mb", 250)):
+                    raise RuntimeError("แรมว่างไม่พอ ลองใหม่ภายหลัง")
+                p = run_worker(cmd, payload, timeout, heavy=True)
+            if p.returncode == -15:  # stopped for an urgent alert scan
+                JOBS2[jk] = {"status": "queued"}
+                time.sleep(120)
+                continue
+            break
+        try:
+            out = json.loads(p.stdout)
+        except ValueError:
+            raise RuntimeError((p.stderr.strip().splitlines() or ["ไม่สำเร็จ (อาจถูกปิดเพราะแรมไม่พอ)"])[-1][:200])
+        (RES / f"{kind}_{key}.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        JOBS2.pop(jk, None)
+    except Exception as e:
+        JOBS2[jk] = {"status": "error", "error": str(e)[:200]}
+
+
+def build_job(kind, key, b):
+    num = lambda v, lo, hi, d: max(lo, min(hi, int(float(v)))) if isinstance(v, (int, float, str)) and str(v).replace(".", "", 1).isdigit() else d
+    if kind == "walkforward":
+        if b.get("strategy") not in STRATS:
+            raise ValueError("กลยุทธ์ไม่ถูกต้อง")
+        return {"ticker": key, "strategy": b["strategy"], "ty": num(b.get("ty"), 2, 15, 5), "tm": num(b.get("tm"), 3, 24, 12)}, 1800
+    if kind == "custom":
+        sels = []
+        for s in (b.get("sels") or [])[:6]:
+            sp = CAT["custom"].get(s.get("key"))
+            if not sp:
+                raise ValueError("อินดิเคเตอร์ไม่ถูกต้อง")
+            sels.append({"key": s["key"], "params": {p[0]: (float(s["params"][p[0]]) if isinstance(p[4], float) else int(float(s["params"][p[0]]))) if p[0] in s.get("params", {}) else p[4] for p in sp["params"]}})
+        if not sels:
+            raise ValueError("เลือกอย่างน้อย 1 อินดิเคเตอร์")
+        return {"ticker": key, "sels": sels, "mode": b.get("mode") if b.get("mode") in ("all", "any", "vote") else "all", "hold": num(b.get("hold"), 0, 250, 0)}, 900
+    if kind == "ai_train":
+        import random
+        pool = sorted(i["t"] for i in universe())
+        rnd = random.Random(42)
+        return {"tickers": sorted(rnd.sample(pool, min(num(b.get("n"), 20, 60, 30), len(pool)))), "h": b.get("h") if b.get("h") in (5, 10, 20) else 10}, 3600
+    with LOCK, db() as c:
+        return {"tickers": [r["ticker"] for r in c.execute("SELECT ticker FROM watch")]}, 900
+
+
+def maintenance(wd):
+    """After the daily alert scan: refresh stored studies (AI scores daily; backtest + walk-forward on Saturday mornings)."""
+    if not settings().get("auto_refresh", True):
+        return
+    with LOCK, db() as c:
+        rows = [dict(r) for r in c.execute("SELECT ticker, strategy FROM watch")]
+    if (Path(os.environ.get("BACKTEST_MODEL_DIR", "/data/models")) / "ai_model.json").exists():
+        run_job("ai_score", "all", "ai_score", {"tickers": [r["ticker"] for r in rows]}, 900)
+    if wd == 5:
+        for r in rows:
+            run_backtest(r["ticker"])
+            run_job("walkforward", r["ticker"], "walkforward", {"ticker": r["ticker"], "strategy": r["strategy"], "ty": 5, "tm": 12}, 1800)
 
 
 # ------------------------------------------------------------------ scanning + alerts
-def handle(snap, events, alert, st):
+def handle(snap, events, alert, st, expected="", final=True):
+    snap["stale"] = bool(expected) and snap["date"] < expected
     with LOCK, db() as c:
         c.execute("INSERT OR REPLACE INTO snap VALUES(?,?)", (snap["ticker"], json.dumps(snap, ensure_ascii=False)))
     for ev, detail in events:
+        if snap["stale"] and not final:  # the newest session is not in the data yet: wait for a retry instead of alerting on old bars
+            continue
         with LOCK, db() as c:
             new = c.execute("INSERT OR IGNORE INTO sig VALUES(?,?,?,?,?,?)", (snap["ticker"], snap["date"], ev, snap["price"], detail,
                             datetime.now(TZ).isoformat(timespec="seconds"))).rowcount
@@ -130,11 +236,16 @@ def handle(snap, events, alert, st):
                         f"{snap['ticker']}-{ev}", {"ticker": snap["ticker"], "event": ev, "price": snap["price"], "action": snap["action"]})
 
 
-def run_scan(only=None):
-    """Returns True when finished (even with per-ticker errors), False when postponed for lack of RAM."""
-    if not SCAN_LOCK.acquire(blocking=bool(only)):
+def run_scan(only=None, urgent=False, final=True):
+    """True = finished, False = postponed for lack of RAM, "stale" = newest session not in the data yet (retry soon)."""
+    if urgent:
+        kill_heavy()  # alerts pre-empt any heavy study that is running
+        SCAN_LOCK.acquire()
+    elif not SCAN_LOCK.acquire(blocking=bool(only)):
         return True
     STATUS["scanning"] = True
+    stale = []
+    exp = expected_bar()
     try:
         need, free = int(opt("min_free_mb", 250)), mem_free_mb()
         if free < need:
@@ -156,7 +267,9 @@ def run_scan(only=None):
                 t = o["snap"]["ticker"] if o.get("ok") else o.get("ticker")
                 done.add(t)
                 if o.get("ok"):
-                    handle(o["snap"], o["events"], next(r["alert"] for r in chunk if r["ticker"] == t), st)
+                    handle(o["snap"], o["events"], next(r["alert"] for r in chunk if r["ticker"] == t), st, exp, final)
+                    if o["snap"]["date"] < exp:
+                        stale.append(t)
                 else:
                     errs[t] = o["error"]
             for r in chunk:
@@ -164,7 +277,7 @@ def run_scan(only=None):
                     errs[r["ticker"]] = "ถูกปิดกลางทาง (แรมไม่พอ?)" if p.returncode else "ไม่มีผลลัพธ์"
         STATUS["errors"] = errs
         STATUS["last_scan"] = datetime.now(TZ).isoformat(timespec="minutes")
-        return True
+        return "stale" if stale and not final else True
     except Exception as e:
         STATUS["errors"] = {"_": str(e)[:200]}
         return True
@@ -180,7 +293,7 @@ def run_backtest(t):
         with SCAN_LOCK:  # one heavy job at a time
             if mem_free_mb() < int(opt("min_free_mb", 250)):
                 raise RuntimeError("แรมว่างไม่พอ ลองใหม่ภายหลัง")
-            p = run_worker("backtest", {"ticker": t}, 1500)
+            p = run_worker("backtest", {"ticker": t}, 1500, heavy=True)
         try:
             out = json.loads(p.stdout)
         except ValueError:
@@ -191,6 +304,58 @@ def run_backtest(t):
         JOBS[t] = {"status": "error", "error": str(e)[:200]}
 
 
+def universe():
+    """S&P 500 from Wikipedia (parsed with the standard library, cached 7 days); small built-in list if offline."""
+    f = DATA / "sp500.json"
+    if f.exists() and time.time() - f.stat().st_mtime < 7 * 86400:
+        return json.loads(f.read_text(encoding="utf-8"))
+    try:
+        req = urllib.request.Request("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers={"User-Agent": "Mozilla/5.0 (signal-hub)"})
+        page = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", "ignore")
+        tbl = page.split('id="constituents"', 1)[1].split("</table>", 1)[0]
+        clean = lambda x: _html.unescape(re.sub(r"<.*?>", "", x, flags=re.S)).strip()
+        out = []
+        for r in re.findall(r"<tr>(.*?)</tr>", tbl, re.S):
+            td = re.findall(r"<td.*?>(.*?)</td>", r, re.S)
+            if len(td) >= 3:
+                out.append({"t": clean(td[0]).replace(".", "-"), "n": clean(td[1]), "s": clean(td[2])})
+        if len(out) < 400:
+            raise ValueError("unexpected list")
+        f.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        return out
+    except Exception:
+        return [{"t": t, "n": "", "s": ""} for t in FALLBACK]
+
+
+def run_scanu(cfg):
+    """Market scan in a background thread: 20 tickers per short-lived worker, politely waiting for free RAM."""
+    tks = cfg["tickers"]
+    SJ.clear()
+    SJ.update(status="running", done=0, total=len(tks), rows=[], cfg=cfg, error=None, started=datetime.now(TZ).isoformat(timespec="minutes"))
+    meta = {u["t"]: u for u in universe()} if cfg["universe"] == "sp500" else {}
+    try:
+        for i in range(0, len(tks), 20):
+            for _ in range(40):  # wait up to ~20 min for RAM instead of failing
+                if mem_free_mb() >= int(opt("min_free_mb", 250)):
+                    break
+                time.sleep(30)
+            with SCAN_LOCK:
+                p = run_worker("scanu", {"tickers": tks[i:i + 20], "names": cfg["names"], "specs": cfg["specs"]}, 900)
+            for line in p.stdout.splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                m = meta.get(r["ticker"], {})
+                SJ["rows"].append({**r, "name": m.get("n", ""), "sector": m.get("s", "")})
+            SJ["done"] = min(len(tks), i + 20)
+            time.sleep(1)
+        SJ["status"] = "done"
+        (DATA / "scanu.json").write_text(json.dumps({k: SJ[k] for k in ("rows", "cfg", "started")}, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        SJ.update(status="error", error=str(e)[:200])
+
+
 def scheduler():
     retry_at = 0
     while True:
@@ -199,8 +364,14 @@ def scheduler():
             today = now.strftime("%Y-%m-%d")
             # US sessions Mon-Fri finish early Tue-Sat Thai time
             if 1 <= now.weekday() <= 5 and now.strftime("%H:%M") >= st["time"] and kv_get("last_run") != today and time.time() >= retry_at:
-                if run_scan():
+                n = (kv_get("tries") or {}).get(today, 0)
+                r = run_scan(urgent=True, final=n >= 5)  # up to 6 attempts, 10 minutes apart, while data is still arriving
+                if r is True:
                     kv_set("last_run", today)
+                    threading.Thread(target=maintenance, args=(now.weekday(),), daemon=True).start()
+                elif r == "stale":
+                    kv_set("tries", {today: n + 1})
+                    retry_at = time.time() + 600
                 else:
                     retry_at = time.time() + 1800  # not enough RAM: try again in 30 minutes
         except Exception:
@@ -348,6 +519,63 @@ class H(BaseHTTPRequestHandler):
             if f.exists() and time.time() - f.stat().st_mtime < 86400:
                 return self.send_json({"status": "done", "result": json.loads(f.read_text(encoding="utf-8"))})
             return self.send_json(JOBS.get(t) if JOBS.get(t, {}).get("status") == "error" else {"status": "none"})
+        if path == "/api/scanu" and method == "GET":
+            if SJ["status"] == "none" and (DATA / "scanu.json").exists():
+                SJ.update(status="done", done=0, total=0, **json.loads((DATA / "scanu.json").read_text(encoding="utf-8")))
+            return self.send_json({k: SJ.get(k) for k in ("status", "done", "total", "error", "started", "cfg")} | ({"rows": SJ.get("rows", [])} if SJ["status"] == "done" else {}))
+        if path == "/api/scanu" and method == "POST":
+            if SJ.get("status") == "running":
+                return self.send_json({"error": "กำลังสแกนอยู่"}, 409)
+            base = CAT["scan_specs"]
+            names = [n for n in b.get("names", []) if n in base]
+            if not names:
+                return self.send_json({"error": "เลือกสัญญาณอย่างน้อย 1 ตัว"}, 400)
+            specs = {}
+            for n in names:  # keep each parameter's original type (int stays int)
+                sp = (b.get("specs") or {}).get(n, {})
+                specs[n] = {}
+                for k, d in base[n].items():
+                    try:
+                        specs[n][k] = float(sp.get(k, d)) if isinstance(d, float) else int(round(float(sp.get(k, d))))
+                    except (TypeError, ValueError):
+                        specs[n][k] = d
+            if b.get("universe") == "custom":
+                tks = [re.sub(r"[^A-Z0-9.\-]", "", str(t).upper())[:12] for t in b.get("tickers", [])][:150]
+            else:
+                tks = [u["t"] for u in universe()]
+            tks = list(dict.fromkeys(t for t in tks if t))
+            if not tks:
+                return self.send_json({"error": "ไม่มีรายชื่อหุ้น"}, 400)
+            cfg = {"universe": "custom" if b.get("universe") == "custom" else "sp500", "tickers": tks, "names": names, "specs": specs}
+            threading.Thread(target=run_scanu, args=(cfg,), daemon=True).start()
+            return self.send_json({"status": "running", "total": len(tks)})
+        m = re.match(r"/api/job/(walkforward|custom|ai_train|ai_score)/([A-Za-z0-9._\-]+)$", path)
+        if m and method in ("GET", "POST"):
+            kind, key = m.groups()
+            key = key.upper() if kind in ("walkforward", "custom") else key
+            jk, f = f"{kind}:{key}", RES / f"{kind}_{key}.json"
+            if method == "POST":
+                if JOBS2.get(jk, {}).get("status") not in ("running", "queued"):
+                    try:
+                        pl, to = build_job(kind, key, b)
+                    except (ValueError, KeyError, TypeError) as e:
+                        return self.send_json({"error": str(e) or "ข้อมูลไม่ถูกต้อง"}, 400)
+                    threading.Thread(target=run_job, args=(kind, key, kind, pl, to), daemon=True).start()
+                    JOBS2[jk] = {"status": "running"}
+                return self.send_json({"status": "running"})
+            if JOBS2.get(jk):
+                return self.send_json(JOBS2[jk])
+            if f.exists():
+                return self.send_json({"status": "done", "age_h": round((time.time() - f.stat().st_mtime) / 3600, 1), "result": json.loads(f.read_text(encoding="utf-8"))})
+            return self.send_json({"status": "none"})
+        m = re.match(r"/api/bars/([A-Za-z0-9.\-]+)$", path)
+        if m and method == "GET":  # read straight from the price cache, standard library only (no pandas, no RAM spike)
+            f = DATA / "prices" / f"{m.group(1).upper()}.csv.gz"
+            if not f.exists():
+                return self.send_json({"error": "ยังไม่มีข้อมูลราคาในเครื่อง (จะมีหลังสแกนหรือทดสอบครั้งแรก)"}, 404)
+            with gzip.open(f, "rt", encoding="utf-8") as fh:
+                rows = list(csv.reader(fh))[1:][-260:]
+            return self.send_json({"bars": [{"d": r[0][:10], "o": float(r[1]), "h": float(r[2]), "l": float(r[3]), "c": float(r[4])} for r in rows]})
         if path == "/api/settings" and method == "PUT":
             cur = settings()
             if re.fullmatch(r"\d\d:\d\d", str(b.get("time", ""))):
@@ -357,6 +585,8 @@ class H(BaseHTTPRequestHandler):
                     cur[g].update({k: bool(v) for k, v in b[g].items() if k in cur[g]})
             if isinstance(b.get("capital"), (int, float)) and b["capital"] >= 0:
                 cur["capital"] = b["capital"]
+            if "auto_refresh" in b:
+                cur["auto_refresh"] = bool(b["auto_refresh"])
             kv_set("settings", cur)
             return self.send_json(cur)
         if path == "/api/scan" and method == "POST":
