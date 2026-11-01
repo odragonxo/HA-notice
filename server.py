@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).parent
+mimetypes.add_type("application/manifest+json", ".webmanifest")  # so Chrome accepts the PWA manifest
 try:
     OPT = json.loads((Path(os.environ.get("DATA_DIR", "/data")) / "options.json").read_text())  # add-on options from the HA UI
 except Exception:
