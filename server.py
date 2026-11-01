@@ -417,7 +417,7 @@ class H(BaseHTTPRequestHandler):
             return {}
 
     def authed(self):
-    return True
+        return self.client_address[0] == INGRESS_IP or check_token(self.headers.get("Authorization", "").replace("Bearer ", ""))
 
     def static(self, path):
         p = (WEB / ("index.html" if path in ("", "/") else path.lstrip("/"))).resolve()
