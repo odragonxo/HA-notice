@@ -61,6 +61,24 @@ JOBS2 = {}
 HEAVY = {"p": None}
 RES = DATA / "results"
 RES.mkdir(parents=True, exist_ok=True)
+CHART_TTL = float(opt("chart_refresh_hours", 4)) * 3600      # older than this: serve it anyway, refresh in the background
+BT_DELAY = int(opt("backtest_delay_min", 30)) * 60           # wait after the alert scan before daily backtests
+BT_TTL = float(opt("backtest_refresh_hours", 23)) * 3600     # re-run a ticker's backtest when its file is older
+
+
+def cache_file(kind, key):
+    """Where each stored result lives. The app only READS these files."""
+    if kind == "chart":
+        return DATA / f"chart_{key}.json"
+    if kind == "backtest":
+        return DATA / f"bt_{key}.json"
+    return RES / f"{kind}_{key}.json"
+
+
+def atomic_write(path, text):
+    tmp = str(path) + ".tmp"
+    Path(tmp).write_text(text, encoding="utf-8")
+    os.replace(tmp, str(path))  # a reader never sees a half-written file
 SJ = {"status": "none"}
 FALLBACK = "AAPL MSFT NVDA AMZN GOOGL META AVGO TSLA BRK-B JPM LLY V UNH XOM MA COST HD PG JNJ ABBV NFLX BAC WMT CRM ORCL CVX KO MRK AMD CSCO PEP ADBE TMO LIN MCD ACN ABT DIS WFC GE INTU QCOM TXN AMAT".split()
 STATUS = {"scanning": False, "last_scan": None, "errors": {}}
@@ -153,6 +171,27 @@ def expected_bar():
     return d.isoformat()
 
 
+def refresh_chart(t, name, params):
+    jk = f"chart:{t}"
+    JOBS2[jk] = {"status": "running"}
+    try:
+        for _ in range(6):
+            with SCAN_LOCK:
+                if mem_free_mb() < int(opt("min_free_mb", 250)):
+                    raise RuntimeError("แรมว่างไม่พอ ลองใหม่ภายหลัง")
+                p = run_worker("chart", {"ticker": t, "strategy": name, "params": params, "out": str(cache_file("chart", t))}, 600, heavy=True)
+            if p.returncode == -15:  # stopped for an urgent alert scan
+                JOBS2[jk] = {"status": "queued"}
+                time.sleep(120)
+                continue
+            break
+        if p.returncode != 0:
+            raise RuntimeError((p.stderr.strip().splitlines() or ["คำนวณกราฟไม่สำเร็จ"])[-1][:200])
+        JOBS2.pop(jk, None)
+    except Exception as e:
+        JOBS2[jk] = {"status": "error", "error": str(e)[:200]}
+
+
 def run_job(kind, key, cmd, payload, timeout):
     """Generic heavy job: result is written to /data/results and only READ by the app. Re-queued if an alert scan pre-empts it."""
     jk = f"{kind}:{key}"
@@ -172,7 +211,7 @@ def run_job(kind, key, cmd, payload, timeout):
             out = json.loads(p.stdout)
         except ValueError:
             raise RuntimeError((p.stderr.strip().splitlines() or ["ไม่สำเร็จ (อาจถูกปิดเพราะแรมไม่พอ)"])[-1][:200])
-        (RES / f"{kind}_{key}.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        atomic_write(cache_file(kind, key), json.dumps(out, ensure_ascii=False))
         JOBS2.pop(jk, None)
     except Exception as e:
         JOBS2[jk] = {"status": "error", "error": str(e)[:200]}
@@ -211,10 +250,12 @@ def maintenance(wd):
         rows = [dict(r) for r in c.execute("SELECT ticker, strategy FROM watch")]
     if (Path(os.environ.get("BACKTEST_MODEL_DIR", "/data/models")) / "ai_model.json").exists():
         run_job("ai_score", "all", "ai_score", {"tickers": [r["ticker"] for r in rows]}, 900)
-    if wd == 5:
-        for r in rows:
+    time.sleep(BT_DELAY)  # let the alert scan settle first, then one ticker at a time
+    for r in rows:
+        f = cache_file("backtest", r["ticker"])
+        if not f.exists() or time.time() - f.stat().st_mtime > BT_TTL:
             run_backtest(r["ticker"])
-            run_job("walkforward", r["ticker"], "walkforward", {"ticker": r["ticker"], "strategy": r["strategy"], "ty": 5, "tm": 12}, 1800)
+            time.sleep(60)
 
 
 # ------------------------------------------------------------------ scanning + alerts
@@ -299,7 +340,7 @@ def run_backtest(t):
             out = json.loads(p.stdout)
         except ValueError:
             raise RuntimeError((p.stderr.strip().splitlines() or ["ทดสอบไม่สำเร็จ (อาจถูกปิดเพราะแรมไม่พอ)"])[-1][:200])
-        (DATA / f"bt_{t}.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+        atomic_write(cache_file("backtest", t), json.dumps(out, ensure_ascii=False))
         JOBS[t] = {"status": "done"}
     except Exception as e:
         JOBS[t] = {"status": "error", "error": str(e)[:200]}
@@ -490,22 +531,41 @@ class H(BaseHTTPRequestHandler):
         m = re.match(r"/api/chart/([A-Za-z0-9.\-]+)$", path)
         if m and method == "GET":
             t = m.group(1).upper()
-            cache = DATA / f"chart_{t}.json"
-            if cache.exists() and time.time() - cache.stat().st_mtime < 900:
-                return self.send_json(json.loads(cache.read_text(encoding="utf-8")))
             with LOCK, db() as c:
                 r = c.execute("SELECT * FROM watch WHERE ticker=?", (t,)).fetchone()
             name, params = (r["strategy"], json.loads(r["params"])) if r else ("gtr_default", {})
-            with SCAN_LOCK:  # one heavy job at a time
-                if mem_free_mb() < int(opt("min_free_mb", 250)):
-                    return self.send_json({"error": "แรมว่างไม่พอ ลองใหม่ภายหลัง"}, 503)
-                p = run_worker("chart", {"ticker": t, "strategy": name, "params": params}, 300)
-            try:
-                out = json.loads(p.stdout)
-            except ValueError:
-                return self.send_json({"error": (p.stderr.strip().splitlines() or ["คำนวณไม่สำเร็จ"])[-1][:200]}, 400)
-            cache.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
-            return self.send_json(out)
+            f = cache_file("chart", t)
+            age = time.time() - f.stat().st_mtime if f.exists() else None
+            job = JOBS2.get(f"chart:{t}", {})
+            busy = job.get("status") in ("running", "queued")
+            if (age is None or age > CHART_TTL) and not busy:
+                JOBS2[f"chart:{t}"] = {"status": "running"}
+                threading.Thread(target=refresh_chart, args=(t, name, params), daemon=True).start()
+                busy = True
+            if f.exists():
+                try:
+                    out = json.loads(f.read_text(encoding="utf-8"))
+                    out["age_h"], out["refreshing"] = round(age / 3600, 1), busy  # old data is shown at once, the app refreshes itself
+                    return self.send_json(out)
+                except ValueError:
+                    pass
+            if job.get("status") == "error":
+                return self.send_json({"error": job["error"]}, 400)
+            return self.send_json({"status": "loading", "refreshing": True})
+        if path == "/api/status" and method == "GET":
+            with LOCK, db() as c:
+                tks = [r["ticker"] for r in c.execute("SELECT ticker FROM watch")]
+            files = {}
+            for kind, keys in (("chart", tks), ("backtest", tks), ("walkforward", tks), ("custom", tks), ("ai_score", ["all"]), ("ai_train", ["model"])):
+                for k in keys:
+                    fp = cache_file(kind, k)
+                    if fp.exists():
+                        files[f"{kind}:{k}"] = {"age_h": round((time.time() - fp.stat().st_mtime) / 3600, 1), "kb": round(fp.stat().st_size / 1024, 1)}
+            prices = {p.name[:-7]: {"age_h": round((time.time() - p.stat().st_mtime) / 3600, 1), "kb": round(p.stat().st_size / 1024, 1)}
+                      for p in (DATA / "prices").glob("*.csv.gz")} if (DATA / "prices").exists() else {}
+            jobs = {k: v for k, v in list(JOBS2.items()) + [("backtest:" + a, b) for a, b in JOBS.items()] if v.get("status") in ("running", "queued", "error")}
+            return self.send_json({"files": files, "prices": prices, "jobs": jobs, "scan": STATUS, "free_mb": mem_free_mb(),
+                                   "every": {"chart_h": CHART_TTL / 3600, "backtest_delay_min": BT_DELAY // 60, "backtest_h": BT_TTL / 3600, "scan_time": settings()["time"]}})
         m = re.match(r"/api/backtest/([A-Za-z0-9.\-]+)$", path)
         if m and method in ("GET", "POST"):
             t = m.group(1).upper()
@@ -518,7 +578,7 @@ class H(BaseHTTPRequestHandler):
             if JOBS.get(t, {}).get("status") == "running":
                 return self.send_json({"status": "running"})
             if f.exists() and time.time() - f.stat().st_mtime < 86400:
-                return self.send_json({"status": "done", "result": json.loads(f.read_text(encoding="utf-8"))})
+                return self.send_json({"status": "done", "age_h": round((time.time() - f.stat().st_mtime) / 3600, 1), "result": json.loads(f.read_text(encoding="utf-8"))})
             return self.send_json(JOBS.get(t) if JOBS.get(t, {}).get("status") == "error" else {"status": "none"})
         if path == "/api/scanu" and method == "GET":
             if SJ["status"] == "none" and (DATA / "scanu.json").exists():

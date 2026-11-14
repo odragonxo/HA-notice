@@ -1,5 +1,5 @@
 name: Signal Hub
-version: "0.5.4"
+version: "0.6.0"
 slug: signal_hub
 description: สแกนสัญญาณซื้อขายหุ้นและแจ้งเตือนเข้ามือถือ
 arch: [aarch64, amd64]
@@ -21,6 +21,9 @@ options:
   default_strategy: gtr_default
   cost_pct: 0.2
   min_free_mb: 250
+  chart_refresh_hours: 4
+  backtest_delay_min: 30
+  backtest_refresh_hours: 23
   notify_on_start: true
   scan_on_start: false
   ha_notify: []
@@ -34,6 +37,9 @@ schema:
   default_strategy: str
   cost_pct: float
   min_free_mb: int
+  chart_refresh_hours: float
+  backtest_delay_min: int
+  backtest_refresh_hours: float
   notify_on_start: bool
   scan_on_start: bool
   ha_notify: [str]

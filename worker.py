@@ -96,12 +96,23 @@ def analyse(t, name, params):
     return snap, events, df, trades
 
 
+def atomic_write(path, data):
+    """Write JSON atomically so the server never reads a half-written file."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False))
+    os.replace(tmp, path)
+
+
 def main():
     cmd, req = sys.argv[1], json.load(sys.stdin)
     if cmd == "scan":
         for it in req["items"]:
             try:
                 snap, ev, _, _ = analyse(it["ticker"], it["strategy"], it["params"])
+                out_path = req.get("snap_dir")
+                if out_path:
+                    atomic_write(os.path.join(out_path, f"snap_{it['ticker']}.json"), {"snap": snap, "events": ev, "ts": datetime.now().isoformat(timespec="seconds")})
                 print(json.dumps({"ok": True, "snap": snap, "events": ev}, ensure_ascii=False), flush=True)
             except Exception as e:
                 print(json.dumps({"ok": False, "ticker": it["ticker"], "error": str(e)[:200]}, ensure_ascii=False), flush=True)
@@ -206,11 +217,15 @@ def main():
     elif cmd == "chart":
         snap, _, df, tr = analyse(req["ticker"], req["strategy"], req["params"])
         d = df.iloc[-260:]
-        print(json.dumps({"ticker": req["ticker"], "strategy": req["strategy"], "snap": snap,
-                          "bars": [{"d": i.strftime("%Y-%m-%d"), "o": r.Open, "h": r.High, "l": r.Low, "c": r.Close} for i, r in d.iterrows()],
-                          "trades": [{"entry_date": x.entry_date.strftime("%Y-%m-%d"), "entry_price": x.entry_price,
-                                      "exit_date": x.exit_date.strftime("%Y-%m-%d"), "exit_price": x.exit_price,
-                                      "ret": x["return"], "status": x.status} for _, x in tr.iterrows()]}, ensure_ascii=False))
+        data = {"ticker": req["ticker"], "strategy": req["strategy"], "snap": snap,
+                "bars": [{"d": i.strftime("%Y-%m-%d"), "o": r.Open, "h": r.High, "l": r.Low, "c": r.Close} for i, r in d.iterrows()],
+                "trades": [{"entry_date": x.entry_date.strftime("%Y-%m-%d"), "entry_price": x.entry_price,
+                             "exit_date": x.exit_date.strftime("%Y-%m-%d"), "exit_price": x.exit_price,
+                             "ret": x["return"], "status": x.status} for _, x in tr.iterrows()]}
+        if req.get("out"):
+            atomic_write(req["out"], data)
+        else:
+            print(json.dumps(data, ensure_ascii=False))
 
 
 if __name__ == "__main__":
